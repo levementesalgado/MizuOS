@@ -1,0 +1,92 @@
+// VGA text mode driver — Hako example
+// Hardware control via asm! and raw memory access
+
+box vga {
+  inst put_char(c: u8, x: u16, y: u16)
+  inst write(msg: &str)
+  inst clear()
+  inst scroll()
+  inst set_cursor(x: u16, y: u16)
+}
+
+box port {
+  inst outb(value: u8, port: u16)
+  inst inb(port: u16) -> u8
+}
+
+// Port I/O — direct hardware access via asm!
+impl port::outb(value: u8, port: u16) {
+  asm!("out dx, al", in("dx") port, in("al") value)
+}
+
+impl port::inb(port: u16) -> u8 {
+  asm!("in al, dx", in("dx") port, out("al") value)
+  retorna value
+}
+
+// VGA — write to text mode buffer at 0xB8000
+impl vga::put_char(c: u8, x: u16, y: u16) {
+  let pos: u32 = (x as u32) + (y as u32) * 80;
+  let addr: u32 = 0xB8000 + pos * 2;
+
+  caso pos >= 80 * 25 => {
+    vga::scroll();
+  }
+
+  asm!("mov byte [{0}], {1}", in(reg) addr, in(reg) c)
+  asm!("mov byte [{0}], 0x07", in(reg) addr + 1)
+}
+
+impl vga::clear() {
+  asm!("rep stosw",
+       in("ecx") 80 * 25,
+       in("eax") 0x0720,
+       in("edi") 0xB8000)
+}
+
+impl vga::scroll() {
+  // Copy lines 1-24 to 0-23
+  asm!("rep movsw",
+       in("ecx") 80 * 24,
+       in("esi") 0xB8000 + 80 * 2,
+       in("edi") 0xB8000)
+  // Clear last line
+  asm!("rep stosw",
+       in("ecx") 80,
+       in("eax") 0x0720,
+       in("edi") 0xB8000 + 80 * 24 * 2)
+}
+
+impl vga::set_cursor(x: u16, y: u16) {
+  let pos: u16 = x + y * 80;
+
+  port::outb(14, 0x3D4);
+  port::outb((pos >> 8) as u8, 0x3D5);
+  port::outb(15, 0x3D4);
+  port::outb(pos as u8, 0x3D5);
+}
+
+impl vga::write(msg: &str) {
+  let mut x: u16 = 0;
+  let mut y: u16 = 0;
+
+    for c in msg.bytes() {
+    caso c == b'\n' => {
+      x = 0;
+      y = y + 1;
+    }
+    caso c == b'\r' => {
+      x = 0;
+    }
+    caso else => {
+      vga::put_char(c, x, y);
+      x = x + 1;
+      caso x >= 80 => {
+        x = 0;
+        y = y + 1;
+      }
+    }
+  }
+
+  vga::set_cursor(x, y);
+}

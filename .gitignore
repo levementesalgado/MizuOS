@@ -1,0 +1,23 @@
+# Rust
+target/
+*.o
+*.tar
+*.iso
+Cargo.lock
+
+# IDE
+.vscode/
+.idea/
+
+# Temp
+/tmp/
+*.swp
+*.swo
+
+# Mizu workspace (kept local, not part of Hako repo)
+mizu-core/
+mizu-sh/
+mizu-kernel/
+planning.md
+language_idea.md
+objects.md
