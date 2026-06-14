@@ -1,6 +1,7 @@
 pub mod ast;
 pub mod parser;
 pub mod codegen;
+pub mod stdlib;
 
 use std::fs;
 use std::path::Path;
@@ -18,5 +19,5 @@ pub fn transpile_file(input_path: &Path, output_path: &Path) -> Result<(usize, u
     fs::write(output_path, &output)
         .map_err(|e| format!("could not write {}: {}", output_path.display(), e))?;
 
-    Ok((program.boxes.len(), program.impls.len()))
+    Ok((program.boxes.len(), program.flows.len()))
 }

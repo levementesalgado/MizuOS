@@ -1,163 +1,124 @@
 use std::fmt;
 
-#[derive(Debug, Clone)]
-pub struct HakoProgram {
-    pub boxes: Vec<HakoBox>,
-    pub impls: Vec<HakoImpl>,
+#[derive(Debug)]
+pub struct Program {
+    pub boxes: Vec<Box>,
+    pub flows: Vec<Flow>,
 }
 
-#[derive(Debug, Clone)]
-pub struct HakoBox {
+#[derive(Debug)]
+pub struct Box {
     pub name: String,
-    pub instructions: Vec<HakoInstDecl>,
+    pub extends: Option<String>,
+    pub items: Vec<Item>,
 }
 
-#[derive(Debug, Clone)]
-pub struct HakoInstDecl {
-    pub name: String,
-    pub params: Vec<HakoParam>,
-    pub ret_type: Option<String>,
-}
-
-#[derive(Debug, Clone)]
-pub struct HakoParam {
-    pub name: String,
-    pub type_name: String,
-}
-
-#[derive(Debug, Clone)]
-pub struct HakoImpl {
-    pub box_name: String,
-    pub inst_name: String,
-    pub params: Vec<HakoParam>,
-    pub ret_type: Option<String>,
-    pub body: Vec<HakoStmt>,
-}
-
-#[derive(Debug, Clone)]
-pub enum HakoStmt {
-    Let {
+#[derive(Debug)]
+pub enum Item {
+    Var { name: String, value: Option<String> },
+    Fn {
         name: String,
-        type_name: Option<String>,
-        is_mut: bool,
-        value: Option<String>,
+        params: Vec<(String, String)>,
+        mode: FnMode,
+        body: Vec<Stmt>,
     },
     Expr(String),
-    Caso {
-        cond: String,
-        body: Vec<HakoStmt>,
-    },
-    CasoContrario(Vec<HakoStmt>),
-    Retorna(Option<String>),
-    Asm {
-        template: String,
-        operands: Vec<String>,
-        clobbers: Vec<String>,
-    },
-    Loop(Vec<HakoStmt>),
-    For {
-        var: String,
-        iter: String,
-        body: Vec<HakoStmt>,
-    },
-    Block(Vec<HakoStmt>),
-    Ref(String),
-    Empty,
 }
 
-impl fmt::Display for HakoProgram {
+#[derive(Debug)]
+pub enum FnMode {
+    Auto,
+    Block,
+    Raw,
+}
+
+#[derive(Debug)]
+pub enum Stmt {
+    If {
+        cond: String,
+        then: Vec<Stmt>,
+        r#else: Vec<Stmt>,
+    },
+    Loop(Vec<Stmt>),
+    For { var: String, iter: String, body: Vec<Stmt> },
+    Break,
+    Assign { var: String, value: String },
+    Expr(String),
+    Block(Vec<Stmt>),
+    AsmOut { reg: String, var: String },
+    AsmIn { reg: String, var: String },
+    AsmLine(String),
+}
+
+#[derive(Debug)]
+pub struct Flow {
+    pub name: String,
+    pub steps: Vec<String>,
+}
+
+impl fmt::Display for Program {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         for b in &self.boxes {
-            writeln!(f, "box {} {{", b.name)?;
-            for inst in &b.instructions {
-                write!(f, "  inst {}(", inst.name)?;
-                for (i, p) in inst.params.iter().enumerate() {
-                    if i > 0 { write!(f, ", ")?; }
-                    write!(f, "{}: {}", p.name, p.type_name)?;
-                }
-                write!(f, ")")?;
-                if let Some(ref rt) = inst.ret_type {
-                    write!(f, " -> {}", rt)?;
-                }
-                writeln!(f)?;
-            }
+            write!(f, "box {}", b.name)?;
+            if let Some(ref ext) = b.extends { write!(f, "::{}", ext)?; }
+            writeln!(f, " {{")?;
+            for item in &b.items { write_item(f, item, 1)?; }
             writeln!(f, "}}")?;
         }
-        for imp in &self.impls {
-            writeln!(f)?;
-            write!(f, "impl {}::{}(", imp.box_name, imp.inst_name)?;
-            for (i, p) in imp.params.iter().enumerate() {
-                if i > 0 { write!(f, ", ")?; }
-                write!(f, "{}: {}", p.name, p.type_name)?;
-            }
-            write!(f, ")")?;
-            if let Some(ref rt) = imp.ret_type {
-                write!(f, " -> {}", rt)?;
-            }
-            writeln!(f, " {{")?;
-            for stmt in &imp.body {
-                write_stmt(f, stmt, 1)?;
-            }
+        for fl in &self.flows {
+            writeln!(f, "flow {} {{", fl.name)?;
+            for step in &fl.steps { writeln!(f, "  {}", step)?; }
             writeln!(f, "}}")?;
         }
         Ok(())
     }
 }
 
-fn write_stmt(f: &mut fmt::Formatter<'_>, stmt: &HakoStmt, indent: usize) -> fmt::Result {
+fn write_item(f: &mut fmt::Formatter<'_>, item: &Item, indent: usize) -> fmt::Result {
     let ind = "  ".repeat(indent);
-    match stmt {
-        HakoStmt::Let { name, type_name, is_mut, value } => {
-            write!(f, "{}let {}{}", ind, if *is_mut { "mut " } else { "" }, name)?;
-            if let Some(ref t) = type_name { write!(f, ": {}", t)?; }
+    match item {
+        Item::Var { name, value } => {
+            write!(f, "{}{}", ind, name)?;
             if let Some(ref v) = value { write!(f, " = {}", v)?; }
             writeln!(f)?;
         }
-        HakoStmt::Expr(e) => writeln!(f, "{}{};", ind, e)?,
-        HakoStmt::Caso { cond, body } => {
-            writeln!(f, "{}caso {} => {{", ind, cond)?;
-            for s in body { write_stmt(f, s, indent + 1)?; }
-            writeln!(f, "{}}}", ind)?;
-        }
-        HakoStmt::CasoContrario(body) => {
-            writeln!(f, "{}caso contrário => {{", ind)?;
-            for s in body { write_stmt(f, s, indent + 1)?; }
-            writeln!(f, "{}}}", ind)?;
-        }
-        HakoStmt::Retorna(v) => {
-            if let Some(ref v) = v { writeln!(f, "{}retorna {};", ind, v)?; }
-            else { writeln!(f, "{}retorna;", ind)?; }
-        }
-        HakoStmt::Asm { template, operands, clobbers } => {
-            write!(f, "{}asm!(\"{}\"", ind, template)?;
-            if !clobbers.is_empty() {
-                // check if last part of template is options
+        Item::Fn { name, params, mode, body } => {
+            write!(f, "{}{}(", ind, name)?;
+            for (i, (p, pt)) in params.iter().enumerate() {
+                if i > 0 { write!(f, ", ")?; }
+                write!(f, "{}", p)?;
+                if !pt.is_empty() { write!(f, ": {}", pt)?; }
             }
-            for op in operands {
-                write!(f, ", {}", op)?;
+            write!(f, ")")?;
+            match mode {
+                FnMode::Auto => writeln!(f, " => default")?,
+                FnMode::Block => { writeln!(f, " {{")?; for s in body { write_stmt(f, s, indent + 1)?; } writeln!(f, "{}}}", ind)?; }
+                FnMode::Raw => { writeln!(f, " raw {{")?; for s in body { write_stmt(f, s, indent + 1)?; } writeln!(f, "{}}}", ind)?; }
             }
-            for cl in clobbers {
-                write!(f, ", {}", cl)?;
-            }
-            writeln!(f, ");")?;
         }
-        HakoStmt::Loop(body) => {
-            writeln!(f, "{}loop {{", ind)?;
-            for s in body { write_stmt(f, s, indent + 1)?; }
-            writeln!(f, "{}}}", ind)?;
+        Item::Expr(e) => writeln!(f, "{}{};", ind, e)?,
+    }
+    Ok(())
+}
+
+fn write_stmt(f: &mut fmt::Formatter<'_>, stmt: &Stmt, indent: usize) -> fmt::Result {
+    let ind = "  ".repeat(indent);
+    match stmt {
+        Stmt::If { cond, then, r#else } => {
+            writeln!(f, "{}if {} {{", ind, cond)?;
+            for s in then { write_stmt(f, s, indent + 1)?; }
+            if r#else.is_empty() { writeln!(f, "{}}}", ind)?; }
+            else { writeln!(f, "{}}} else {{", ind)?; for s in r#else { write_stmt(f, s, indent + 1)?; } writeln!(f, "{}}}", ind)?; }
         }
-        HakoStmt::For { var, iter, body } => {
-            writeln!(f, "{}for {} in {} {{", ind, var, iter)?;
-            for s in body { write_stmt(f, s, indent + 1)?; }
-            writeln!(f, "{}}}", ind)?;
-        }
-        HakoStmt::Block(body) => {
-            writeln!(f, "{} {{", ind)?;
-            for s in body { write_stmt(f, s, indent + 1)?; }
-            writeln!(f, "{}}}", ind)?;
-        }
-        HakoStmt::Ref(r) => writeln!(f, "{}ref {};", ind, r)?,
-        HakoStmt::Empty => {}
+        Stmt::Loop(body) => { writeln!(f, "{}loop {{", ind)?; for s in body { write_stmt(f, s, indent + 1)?; } writeln!(f, "{}}}", ind)?; }
+        Stmt::For { var, iter, body } => { writeln!(f, "{}for {} in {} {{", ind, var, iter)?; for s in body { write_stmt(f, s, indent + 1)?; } writeln!(f, "{}}}", ind)?; }
+        Stmt::Break => writeln!(f, "{}break", ind)?,
+        Stmt::Assign { var, value } => writeln!(f, "{}{} = {}", ind, var, value)?,
+        Stmt::Expr(e) => writeln!(f, "{}{}", ind, e)?,
+        Stmt::Block(body) => { writeln!(f, "{} {{", ind)?; for s in body { write_stmt(f, s, indent + 1)?; } writeln!(f, "{}}}", ind)?; }
+        Stmt::AsmOut { reg, var } => writeln!(f, "{}out({}, {})", ind, reg, var)?,
+        Stmt::AsmIn { reg, var } => writeln!(f, "{}in({}, {})", ind, reg, var)?,
+        Stmt::AsmLine(s) => writeln!(f, "{}\"{}\"", ind, s)?,
     }
     Ok(())
 }

@@ -22,598 +22,527 @@ pub struct Parser {
 
 impl Parser {
     pub fn new(input: &str) -> Self {
-        Self {
-            input: input.to_string(),
-            pos: 0,
-            line: 1,
-        }
+        Self { input: input.to_string(), pos: 0, line: 1 }
     }
 
-    pub fn parse(&mut self) -> Result<HakoProgram, ParseError> {
-        let mut program = HakoProgram {
-            boxes: Vec::new(),
-            impls: Vec::new(),
-        };
-
+    pub fn parse(&mut self) -> Result<Program, ParseError> {
+        let mut program = Program { boxes: Vec::new(), flows: Vec::new() };
         loop {
-            self.skip_whitespace_and_comments();
-            if self.pos >= self.input.len() {
-                break;
-            }
-            let word = self.peek_word();
-            match word {
-                "box" => {
-                    program.boxes.push(self.parse_box()?);
-                }
-                "impl" => {
-                    program.impls.push(self.parse_impl()?);
-                }
-                _ => {
-                    return Err(self.error(&format!("expected 'box' or 'impl', got '{}'", word)));
-                }
+            self.skip();
+            if self.pos >= self.input.len() { break; }
+            match self.peek() {
+                "box" => program.boxes.push(self.parse_box()?),
+                "flow" => program.flows.push(self.parse_flow()?),
+                w => return Err(self.err(&format!("expected 'box' or 'flow', got '{}'", w))),
             }
         }
-
         Ok(program)
     }
 
-    fn parse_box(&mut self) -> Result<HakoBox, ParseError> {
+    // --- Box ---
+
+    fn parse_box(&mut self) -> Result<Box, ParseError> {
         self.expect_word("box")?;
-        let name = self.expect_ident()?;
-        self.expect_char('{')?;
-
-        let mut instructions = Vec::new();
-        loop {
-            self.skip_whitespace_and_comments();
-            if self.peek_char() == Some('}') {
-                self.pos += 1;
-                break;
-            }
-            instructions.push(self.parse_inst_decl()?);
-        }
-
-        Ok(HakoBox { name, instructions })
-    }
-
-    fn parse_inst_decl(&mut self) -> Result<HakoInstDecl, ParseError> {
-        self.expect_word("inst")?;
-        let name = self.expect_ident()?;
-        self.expect_char('(')?;
-        let params = self.parse_params()?;
-        self.expect_char(')')?;
-
-        self.skip_whitespace_and_comments();
-        let ret_type = if self.peek_word() == "->" {
-            self.pos += 2; // skip "->"
-            Some(self.parse_type_name()?)
-        } else {
-            None
-        };
-
-        Ok(HakoInstDecl { name, params, ret_type })
-    }
-
-    fn parse_impl(&mut self) -> Result<HakoImpl, ParseError> {
-        self.expect_word("impl")?;
-        let box_name = self.expect_ident()?;
-        self.expect_word("::")?;
-        let inst_name = self.expect_ident()?;
-        self.expect_char('(')?;
-        let params = self.parse_params()?;
-        self.expect_char(')')?;
-
-        self.skip_whitespace_and_comments();
-        let ret_type = if self.peek_word() == "->" {
+        let name = self.expect_id()?;
+        let extends = if self.peek() == "::" {
             self.pos += 2;
-            Some(self.parse_type_name()?)
+            Some(self.expect_id()?)
         } else {
             None
         };
-
-        self.expect_char('{')?;
-        let body = self.parse_stmt_block('}')?;
-
-        Ok(HakoImpl { box_name, inst_name, params, ret_type, body })
-    }
-
-    fn parse_params(&mut self) -> Result<Vec<HakoParam>, ParseError> {
-        let mut params = Vec::new();
+        self.expect('{')?;
+        let mut items = Vec::new();
         loop {
-            self.skip_whitespace_and_comments();
-            if self.peek_char() == Some(')') {
-                break;
-            }
-            if !params.is_empty() {
-                self.expect_char(',')?;
-                self.skip_whitespace_and_comments();
-            }
-            if self.peek_char() == Some(')') {
-                break; // trailing comma allowed
-            }
-            let name = self.expect_ident()?;
-            self.expect_char(':')?;
-            let type_name = self.parse_type_name()?;
-            params.push(HakoParam { name, type_name });
+            self.skip();
+            if self.peek_char() == Some('}') { self.pos += 1; break; }
+            if self.pos >= self.input.len() { return Err(self.err("unterminated box")); }
+            items.push(self.parse_item()?);
         }
-        Ok(params)
+        Ok(Box { name, extends, items })
     }
 
-    fn parse_stmt_block(&mut self, end_char: char) -> Result<Vec<HakoStmt>, ParseError> {
+    fn parse_item(&mut self) -> Result<Item, ParseError> {
+        let first = self.expect_id()?;
+        self.skip();
+
+        // Check for => (auto-mode function)
+        if self.peek() == "=>" {
+            self.pos += 2;
+            self.skip();
+            self.expect_id()?; // mode name
+            return Ok(Item::Fn { name: first, params: vec![], mode: FnMode::Auto, body: vec![] });
+        }
+
+        if self.peek_char() == Some('(') {
+            self.parse_fn(first)
+        } else if self.peek_char() == Some('{') {
+            // Function with no params
+            self.pos += 1;
+            let body = self.block()?;
+            Ok(Item::Fn { name: first, params: vec![], mode: FnMode::Block, body })
+        } else if self.peek() == "raw" {
+            self.pos += 3;
+            self.skip();
+            self.expect('{')?;
+            let body = self.block()?;
+            Ok(Item::Fn { name: first, params: vec![], mode: FnMode::Raw, body })
+        } else if self.peek_char() == Some('=') {
+            self.pos += 1;
+            self.skip();
+            let value = self.expr_eol()?;
+            Ok(Item::Var { name: first, value: Some(value) })
+        } else {
+            let rest = self.expr_eol()?;
+            let expr = if rest.is_empty() { first } else { format!("{}{}", first, rest) };
+            Ok(Item::Expr(expr))
+        }
+    }
+
+    fn parse_fn(&mut self, name: String) -> Result<Item, ParseError> {
+        self.expect('(')?;
+        let params = self.params()?;
+        self.expect(')')?;
+        self.skip();
+
+        if self.peek() == "raw" {
+            self.pos += 3;
+            self.skip();
+            self.expect('{')?;
+            let body = self.block()?;
+            Ok(Item::Fn { name, params, mode: FnMode::Raw, body })
+        } else if self.peek() == "=>" {
+            self.pos += 2;
+            self.skip();
+            self.expect_id()?; // "default" or whatever
+            Ok(Item::Fn { name, params, mode: FnMode::Auto, body: vec![] })
+        } else {
+            self.expect('{')?;
+            let body = self.block()?;
+            Ok(Item::Fn { name, params, mode: FnMode::Block, body })
+        }
+    }
+
+    // --- Flow ---
+
+    fn parse_flow(&mut self) -> Result<Flow, ParseError> {
+        self.expect_word("flow")?;
+        let name = self.expect_id()?;
+        self.expect('{')?;
+        let mut steps = Vec::new();
+        loop {
+            self.skip();
+            if self.peek_char() == Some('}') { self.pos += 1; break; }
+            let step = self.expect_id()?;
+            steps.push(step);
+        // skip optional arrow → or ->
+        self.skip();
+        let ch = self.peek_char();
+        if ch == Some('-') || ch == Some('→') {
+            // advance past the arrow character(s)
+            if let Some(c) = ch {
+                self.pos += c.len_utf8(); // skip 1 byte for '-', 3 bytes for '→'
+                if c == '-' && self.peek_char() == Some('>') {
+                    self.pos += 1; // skip '>'
+                }
+            }
+        }
+        }
+        Ok(Flow { name, steps })
+    }
+
+    // --- Statements ---
+
+    fn block(&mut self) -> Result<Vec<Stmt>, ParseError> {
         let mut stmts = Vec::new();
         loop {
-            self.skip_whitespace_and_comments();
-            if self.pos >= self.input.len() || self.peek_char() == Some(end_char) {
+            self.skip();
+            if self.pos >= self.input.len() || self.peek_char() == Some('}') {
+                if self.peek_char() == Some('}') { self.pos += 1; }
                 break;
             }
-            stmts.push(self.parse_stmt()?);
-            if self.peek_char() == Some(',') || self.peek_char() == Some(';') {
-                self.pos += 1;
-            }
-        }
-        if self.pos < self.input.len() && self.peek_char() == Some(end_char) {
-            self.pos += 1;
+            stmts.push(self.stmt()?);
         }
         Ok(stmts)
     }
 
-    fn parse_stmt(&mut self) -> Result<HakoStmt, ParseError> {
-        self.skip_whitespace_and_comments();
-        let word = self.peek_word();
-        match word {
-            "let" => self.parse_let(),
-            "caso" => self.parse_caso(),
-            "retorna" => self.parse_retorna(),
-            "asm" => self.parse_asm(),
-            "loop" => self.parse_loop(),
-            "for" => self.parse_for(),
-            "ref" => self.parse_ref_stmt(),
-            "{" => {
-                self.pos += 1;
-                let body = self.parse_stmt_block('}')?;
-                Ok(HakoStmt::Block(body))
-            }
-            "}" => {
-                Ok(HakoStmt::Empty)
-            }
-            _ => {
-                let expr = self.parse_expr_until_semicolon()?;
-                Ok(HakoStmt::Expr(expr))
-            }
-        }
-    }
-
-    fn parse_let(&mut self) -> Result<HakoStmt, ParseError> {
-        self.expect_word("let")?;
-        self.skip_whitespace_and_comments();
-        let is_mut = self.peek_word() == "mut";
-        if is_mut { self.pos += 3; }
-        let name = self.expect_ident()?;
-        let type_name = if self.peek_char() == Some(':') {
+    fn stmt(&mut self) -> Result<Stmt, ParseError> {
+        self.skip();
+        // Check for string literal (assembly line in raw block)
+        if self.peek_char() == Some('"') {
             self.pos += 1;
-            Some(self.parse_type_name()?)
-        } else {
-            None
-        };
-        self.skip_whitespace_and_comments();
-        let value = if self.peek_char() == Some('=') {
-            self.pos += 1;
-            Some(self.parse_expr_until_semicolon()?)
-        } else {
-            None
-        };
-        Ok(HakoStmt::Let { name, type_name, is_mut, value })
-    }
-
-    fn parse_caso(&mut self) -> Result<HakoStmt, ParseError> {
-        self.expect_word("caso")?;
-        self.skip_whitespace_and_comments();
-        // Check for "else" (caso contrário)
-        if self.peek_word() == "else" {
-            self.pos += 4;
-            self.expect_word("=>")?;
-            let body = self.parse_caso_body()?;
-            return Ok(HakoStmt::CasoContrario(body));
-        }
-        let cond = self.parse_expr_until_arrow()?;
-        self.expect_word("=>")?;
-        let body = self.parse_caso_body()?;
-        Ok(HakoStmt::Caso { cond, body })
-    }
-
-    fn parse_caso_body(&mut self) -> Result<Vec<HakoStmt>, ParseError> {
-        self.skip_whitespace_and_comments();
-        if self.peek_char() == Some('{') {
-            self.pos += 1;
-            let body = self.parse_stmt_block('}')?;
-            Ok(body)
-        } else if self.peek_word() == "caso" {
-            // nested caso? or inline statement
-            let stmt = self.parse_stmt()?;
-            Ok(vec![stmt])
-        } else {
-            let expr = self.parse_expr_until_semicolon()?;
-            Ok(vec![HakoStmt::Expr(expr)])
-        }
-    }
-
-    fn parse_retorna(&mut self) -> Result<HakoStmt, ParseError> {
-        self.expect_word("retorna")?;
-        self.skip_whitespace_and_comments();
-        if self.peek_char() == Some(';') || self.peek_char() == Some(',') || self.peek_char() == Some('}') {
-            Ok(HakoStmt::Retorna(None))
-        } else {
-            let expr = self.parse_expr_until_semicolon()?;
-            Ok(HakoStmt::Retorna(Some(expr)))
-        }
-    }
-
-    fn parse_asm(&mut self) -> Result<HakoStmt, ParseError> {
-        self.expect_word("asm")?;
-        self.expect_char('!')?;
-        self.expect_char('(')?;
-
-        let template = self.parse_string_literal()?;
-
-        let mut operands: Vec<String> = Vec::new();
-        let mut clobbers: Vec<String> = Vec::new();
-
-        loop {
-            self.skip_whitespace_and_comments();
-            if self.peek_char() == Some(')') { break; }
-            self.expect_char(',')?;
-            self.skip_whitespace_and_comments();
-            if self.peek_char() == Some(')') { break; }
-
-            // Read one full operand: constraint (expr) or clobber "string"
             let start = self.pos;
-            let mut depth = 0;
-            let mut in_string = false;
             loop {
                 if self.pos >= self.input.len() { break; }
                 let c = self.input.as_bytes()[self.pos] as char;
-                if c == '"' { in_string = !in_string; }
-                else if c == '(' && !in_string { depth += 1; }
-                else if c == ')' && !in_string {
-                    if depth == 0 { break; }
-                    depth -= 1;
-                }
-                else if c == ',' && depth == 0 && !in_string { break; }
+                if c == '"' { break; }
+                if c == '\n' { self.line += 1; }
                 self.pos += 1;
             }
-            let operand = self.input[start..self.pos].trim().to_string();
-            if operand.starts_with("options(") || operand.starts_with("clobber_abi") {
-                clobbers.push(operand);
+            let content = self.input[start..self.pos].to_string();
+            if self.peek_char() == Some('"') { self.pos += 1; }
+            return Ok(Stmt::AsmLine(content));
+        }
+        let w = self.peek();
+        match w {
+            "if" => self.parse_if(),
+            "loop" => self.parse_loop(),
+            "for" => self.parse_for(),
+            "break" => { self.pos += 5; Ok(Stmt::Break) }
+            "{" => { self.pos += 1; let body = self.block()?; Ok(Stmt::Block(body)) }
+            "}" => { self.pos += 1; Ok(Stmt::Expr(String::new())) }
+            "in" | "out" => {
+                let keyword = w.to_string();
+                self.pos += keyword.len();
+                self.skip();
+                if self.peek_char() == Some('(') {
+                    self.expect('(')?;
+                    let reg = self.expect_id()?;
+                    self.expect(',')?;
+                    self.skip();
+                    let var = self.expect_id()?;
+                    self.expect(')')?;
+                    if keyword == "out" {
+                        Ok(Stmt::AsmOut { reg, var })
+                    } else {
+                        Ok(Stmt::AsmIn { reg, var })
+                    }
+                } else {
+                    let rest = self.expr_eol()?;
+                    let expr = if rest.is_empty() { keyword } else { format!("{}{}", keyword, rest) };
+                    Ok(Stmt::Expr(expr))
+                }
+            }
+            _ => self.parse_assign_or_expr(),
+        }
+    }
+
+    fn parse_if(&mut self) -> Result<Stmt, ParseError> {
+        self.expect_word("if")?;
+        let cond = self.expr_arrow()?;
+        self.skip();
+        // Skip optional "=>" after condition
+        if self.peek() == "=>" { self.pos += 2; self.skip(); }
+        let then = if self.peek_char() == Some('{') {
+            self.pos += 1;
+            self.block()?
+        } else {
+            vec![self.stmt()?]
+        };
+        self.skip();
+        let r#else = if self.peek() == "else" {
+            self.pos += 4;
+            self.skip();
+            if self.peek_char() == Some('{') {
+                self.pos += 1;
+                self.block()?
             } else {
-                operands.push(operand);
+                vec![self.stmt()?]
+            }
+        } else {
+            vec![]
+        };
+        Ok(Stmt::If { cond, then, r#else })
+    }
+
+    fn parse_loop(&mut self) -> Result<Stmt, ParseError> {
+        self.expect_word("loop")?;
+        self.expect('{')?;
+        let body = self.block()?;
+        Ok(Stmt::Loop(body))
+    }
+
+    fn parse_for(&mut self) -> Result<Stmt, ParseError> {
+        self.expect_word("for")?;
+        let var = self.expect_id()?;
+        self.expect_word("in")?;
+        let iter = self.expr_brace()?;
+        self.expect('{')?;
+        let body = self.block()?;
+        Ok(Stmt::For { var, iter, body })
+    }
+
+    fn parse_assign_or_expr(&mut self) -> Result<Stmt, ParseError> {
+        let first = self.expect_id()?;
+        self.skip();
+        // Read the full left-hand side including array indexing etc.
+        let mut lvalue = first;
+        loop {
+            match self.peek_char() {
+                Some('[') | Some('(') => {
+                    let ch = self.peek_char().unwrap();
+                    self.pos += 1;
+                    let mut depth = 1i32;
+                    let start = self.pos;
+                    loop {
+                        if self.pos >= self.input.len() { break; }
+                        let c = self.input.as_bytes()[self.pos] as char;
+                        if c == '(' || c == '[' || c == '{' { depth += 1; }
+                        else if c == ')' || c == ']' || c == '}' { depth -= 1; if depth <= 0 { break; } }
+                        self.pos += 1;
+                    }
+                    let inner = self.input[start..self.pos].to_string();
+                    self.pos += 1; // skip closing bracket
+                    lvalue = if ch == '[' {
+                        format!("{}[{}]", lvalue, inner)
+                    } else {
+                        format!("{}({})", lvalue, inner)
+                    };
+                    // skip spaces/tabs only, not newlines
+                    loop {
+                        let c = self.peek_char();
+                        if c == Some(' ') || c == Some('\t') { self.pos += 1; }
+                        else { break; }
+                    }
+                }
+                _ => break,
             }
         }
-
-        self.expect_char(')')?;
-        Ok(HakoStmt::Asm { template, operands, clobbers })
+        if self.peek_char() == Some('=') {
+            self.pos += 1;
+            self.skip();
+            let value = self.expr_eol()?;
+            Ok(Stmt::Assign { var: lvalue, value })
+        } else {
+            // Check for remaining expression on the same line (before newline)
+            let saved = self.pos;
+            let mut has_continuation = false;
+            loop {
+                let c = self.peek_char();
+                if c == None || c == Some('\n') || c == Some(';') || c == Some('}') { break; }
+                if c != Some(' ') && c != Some('\t') { has_continuation = true; break; }
+                self.pos += 1;
+            }
+            self.pos = saved;
+            if has_continuation {
+                let rest = self.expr_eol()?;
+                Ok(Stmt::Expr(format!("{}{}", lvalue, rest)))
+            } else {
+                Ok(Stmt::Expr(lvalue))
+            }
+        }
     }
 
-    fn parse_loop(&mut self) -> Result<HakoStmt, ParseError> {
-        self.expect_word("loop")?;
-        self.expect_char('{')?;
-        let body = self.parse_stmt_block('}')?;
-        Ok(HakoStmt::Loop(body))
-    }
+    // --- Expression helpers ---
 
-    fn parse_for(&mut self) -> Result<HakoStmt, ParseError> {
-        self.expect_word("for")?;
-        let var = self.expect_ident()?;
-        self.expect_word("in")?;
-        let iter = self.parse_expr_until_brace()?;
-        self.expect_char('{')?;
-        let body = self.parse_stmt_block('}')?;
-        Ok(HakoStmt::For { var, iter, body })
-    }
-
-    fn parse_ref_stmt(&mut self) -> Result<HakoStmt, ParseError> {
-        self.expect_word("ref")?;
-        let path = self.parse_path()?;
-        Ok(HakoStmt::Ref(path))
-    }
-
-    fn parse_expr_until_semicolon(&mut self) -> Result<String, ParseError> {
+    fn expr_eol(&mut self) -> Result<String, ParseError> {
         let start = self.pos;
-        let mut depth_paren = 0;
-        let mut depth_brace = 0;
+        let mut depth = 0i32;
+        let mut in_str = false;
         loop {
-            if self.pos >= self.input.len() {
-                break;
-            }
+            if self.pos >= self.input.len() { break; }
             let c = self.input.as_bytes()[self.pos] as char;
-            if c == '(' { depth_paren += 1; }
-            else if c == ')' { depth_paren -= 1; }
-            else if c == '{' { depth_brace += 1; }
-            else if c == '}' { depth_brace -= 1; }
-            else if c == ';' && depth_paren == 0 && depth_brace == 0 {
-                break;
-            }
-            else if c == ',' && depth_paren == 0 && depth_brace == 0 {
-                break;
-            }
-            else if c == '\n' && depth_paren == 0 && depth_brace == 0 {
-                // Check if the next non-space is the end
-                break;
+            if c == '"' { in_str = !in_str; }
+            if !in_str {
+                if c == '(' || c == '[' || c == '{' { depth += 1; }
+                else if c == ')' || c == ']' || c == '}' {
+                    if depth <= 0 {
+                        break; // unmatched bracket — not part of this expression
+                    }
+                    depth -= 1;
+                }
+                else if (c == ';' || c == '\n') && depth == 0 { break; }
+                else if c == '/' && depth == 0 {
+                    if self.pos + 1 < self.input.len()
+                        && self.input.as_bytes()[self.pos + 1] as char == '/' {
+                        break; // stop at inline // comment
+                    }
+                }
+                else if c == '=' && depth == 0 {
+                    // Check it's not ==
+                    if self.pos + 1 < self.input.len() && self.input.as_bytes()[self.pos + 1] as char == '=' {
+                        // == is fine, continue
+                    } else if self.pos > start {
+                        // = at depth 0, outside fn call — break
+                        break;
+                    }
+                }
             }
             self.pos += 1;
         }
-        let expr = self.input[start..self.pos].trim().to_string();
-        Ok(expr)
+        Ok(self.input[start..self.pos].trim().to_string())
     }
 
-    fn parse_expr_until_arrow(&mut self) -> Result<String, ParseError> {
+    fn expr_arrow(&mut self) -> Result<String, ParseError> {
         let start = self.pos;
-        let mut depth_paren = 0;
+        let mut depth = 0i32;
         loop {
-            if self.pos >= self.input.len() {
-                break;
-            }
+            if self.pos >= self.input.len() { break; }
             let c = self.input.as_bytes()[self.pos] as char;
-            if c == '(' { depth_paren += 1; }
-            else if c == ')' { depth_paren -= 1; }
-            else if c == '=' && depth_paren == 0 {
-                if self.pos + 1 < self.input.len() && self.input.as_bytes()[self.pos + 1] as char == '>' {
+            if c == '(' { depth += 1; }
+            else if c == ')' { depth -= 1; }
+            else if c == '/' && depth == 0 {
+                if self.pos + 1 < self.input.len()
+                    && self.input.as_bytes()[self.pos + 1] as char == '/' {
+                    break;
+                }
+            }
+            else if c == '=' && depth == 0 {
+                if self.pos + 1 < self.input.len()
+                    && self.input.as_bytes()[self.pos + 1] as char == '>' {
                     break;
                 }
             }
             self.pos += 1;
         }
-        let expr = self.input[start..self.pos].trim().to_string();
-        Ok(expr)
+        Ok(self.input[start..self.pos].trim().to_string())
     }
 
-    fn parse_expr_until_brace(&mut self) -> Result<String, ParseError> {
+    fn expr_brace(&mut self) -> Result<String, ParseError> {
         let start = self.pos;
         loop {
-            if self.pos >= self.input.len() {
-                break;
-            }
+            if self.pos >= self.input.len() { break; }
             let c = self.input.as_bytes()[self.pos] as char;
-            if c == '{' {
+            if c == '{' { break; }
+            if c == '/' && self.pos + 1 < self.input.len()
+                && self.input.as_bytes()[self.pos + 1] as char == '/' {
                 break;
             }
             self.pos += 1;
         }
-        let expr = self.input[start..self.pos].trim().to_string();
-        Ok(expr)
+        Ok(self.input[start..self.pos].trim().to_string())
     }
 
-    fn parse_type_name(&mut self) -> Result<String, ParseError> {
-        self.skip_whitespace_and_comments();
-        // Handle ! never type
-        if self.peek_char() == Some('!') {
-            self.pos += 1;
-            return Ok("!".to_string());
+    // --- Parameter list ---
+
+    fn params(&mut self) -> Result<Vec<(String, String)>, ParseError> {
+        let mut v = Vec::new();
+        loop {
+            self.skip();
+            if self.peek_char() == Some(')') { break; }
+            if !v.is_empty() { self.expect(',')?; self.skip(); }
+            if self.peek_char() == Some(')') { break; }
+            let name = self.expect_id()?;
+            self.skip();
+            let typ = if self.peek_char() == Some(':') {
+                self.pos += 1;
+                self.skip();
+                self.parse_type()?
+            } else {
+                self.infer_type(&name)
+            };
+            v.push((name, typ));
         }
-        // Handle & reference
+        Ok(v)
+    }
+
+    fn parse_type(&mut self) -> Result<String, ParseError> {
+        let start = self.pos;
+        // Handle &str, &[u32], &[u8], etc.
         if self.peek_char() == Some('&') {
             self.pos += 1;
-            let mut t = String::from("&");
-            // Check for mut
-            self.skip_whitespace_and_comments();
-            if self.peek_word() == "mut" {
-                self.pos += 3;
-                t.push_str("mut ");
-            }
-            t.push_str(&self.parse_type_name()?);
-            return Ok(t);
-        }
-        // Handle * pointer
-        if self.peek_char() == Some('*') {
-            self.pos += 1;
-            let mut t = String::from("*");
-            self.skip_whitespace_and_comments();
-            if self.peek_word() == "const" {
-                self.pos += 5;
-                t.push_str("const ");
-            } else if self.peek_word() == "mut" {
-                self.pos += 3;
-                t.push_str("mut ");
-            }
-            t.push_str(&self.parse_type_name()?);
-            return Ok(t);
-        }
-        self.expect_ident()
-    }
-
-    fn parse_string_literal(&mut self) -> Result<String, ParseError> {
-        self.skip_whitespace_and_comments();
-        if self.peek_char() != Some('"') {
-            return Err(self.error("expected string literal"));
-        }
-        self.pos += 1;
-        let start = self.pos;
-        loop {
-            if self.pos >= self.input.len() {
-                return Err(self.error("unterminated string literal"));
-            }
-            let c = self.input.as_bytes()[self.pos] as char;
-            if c == '"' {
-                let s = self.input[start..self.pos].to_string();
+            if self.peek_char() == Some('[') {
                 self.pos += 1;
-                return Ok(s);
-            }
-            if c == '\\' {
-                self.pos += 1; // skip escaped char
-            }
-            self.pos += 1;
-        }
-    }
-
-    fn parse_path(&mut self) -> Result<String, ParseError> {
-        let mut path = self.expect_ident()?;
-        loop {
-            self.skip_whitespace_and_comments();
-            if self.peek_word() == "::" {
-                self.pos += 2;
-                path.push_str("::");
-                path.push_str(&self.expect_ident()?);
+                let inner = self.expect_id()?;
+                self.expect(']')?;
+                Ok(format!("&[{}]", inner))
             } else {
-                break;
+                self.expect_id()?;
+                Ok(self.input[start..self.pos].to_string())
+            }
+        } else {
+            let id = self.expect_id()?;
+            if self.peek_char() == Some('[') {
+                self.pos += 1;
+                let inner = self.expect_id()?;
+                self.expect(']')?;
+                Ok(format!("{}[{}]", id, inner))
+            } else {
+                Ok(id)
             }
         }
-        Ok(path)
     }
 
-    // == Helpers ==
+    fn infer_type(&self, name: &str) -> String {
+        match name {
+            "s" | "msg" | "str" => "&str".into(),
+            "data" | "buf" | "buffer" | "arr" => "&[u32]".into(),
+            _ => "u32".into(),
+        }
+    }
+
+    // --- Lexer helpers ---
 
     fn peek_char(&self) -> Option<char> {
-        self.input.as_bytes().get(self.pos).map(|&b| b as char)
+        self.input[self.pos..].chars().next()
     }
 
-    fn peek_word(&self) -> &str {
-        let start = self.pos;
-        let rest = &self.input[start..];
-
-        // Check multi-char operators first
+    fn peek(&self) -> &str {
+        let rest = &self.input[self.pos..];
         if rest.starts_with("::") { return "::"; }
-        if rest.starts_with("->") { return "->"; }
         if rest.starts_with("=>") { return "=>"; }
-
-        // Scan alphanumeric/underscore identifier
-        let mut end = start;
-        while end < self.input.len() {
-            let c = self.input.as_bytes()[end] as char;
-            if c.is_alphanumeric() || c == '_' {
-                end += 1;
-            } else {
-                break;
+        if rest.starts_with("->") { return "->"; }
+        let ch = rest.chars().next();
+        match ch {
+            Some(c) if c.is_alphanumeric() || c == '_' => {
+                let mut end = 0;
+                for (i, c) in rest.char_indices() {
+                    if c.is_alphanumeric() || c == '_' { end = i + c.len_utf8(); } else { break; }
+                }
+                &rest[..end]
             }
-        }
-        if end > start {
-            &self.input[start..end]
-        } else {
-            ""
+            _ => "",
         }
     }
 
-    fn expect_ident(&mut self) -> Result<String, ParseError> {
-        self.skip_whitespace_and_comments();
+    fn expect_id(&mut self) -> Result<String, ParseError> {
+        self.skip();
         let start = self.pos;
-        while self.pos < self.input.len() {
-            let c = self.input.as_bytes()[self.pos] as char;
+        let rest = &self.input[self.pos..];
+        let mut end = 0;
+        for (i, c) in rest.char_indices() {
             if c.is_alphanumeric() || c == '_' {
-                self.pos += 1;
+                end = i + c.len_utf8();
             } else {
                 break;
             }
         }
-        if self.pos == start {
-            return Err(self.error("expected identifier"));
-        }
+        if end == 0 { return Err(self.err("expected identifier")); }
+        self.pos += end;
         Ok(self.input[start..self.pos].to_string())
     }
 
     fn expect_word(&mut self, word: &str) -> Result<(), ParseError> {
-        self.skip_whitespace_and_comments();
-        let w = self.peek_word();
-        if w == word {
-            // peek_word doesn't modify self.pos, so we advance by the matched word length
-            self.pos += w.len();
-            Ok(())
-        } else {
-            Err(self.error(&format!("expected '{}', got '{}'", word, w)))
-        }
+        self.skip();
+        let p = self.peek();
+        if p == word { self.pos += word.len(); Ok(()) }
+        else { Err(self.err(&format!("expected '{}', got '{}'", word, p))) }
     }
 
-    fn expect_char(&mut self, c: char) -> Result<(), ParseError> {
-        self.skip_whitespace_and_comments();
-        if self.peek_char() == Some(c) {
-            self.pos += 1;
-            Ok(())
-        } else {
-            Err(self.error(&format!("expected '{}', got '{:?}'", c, self.peek_char())))
-        }
+    fn expect(&mut self, c: char) -> Result<(), ParseError> {
+        self.skip();
+        if self.peek_char() == Some(c) { self.pos += 1; Ok(()) }
+        else { Err(self.err(&format!("expected '{}'", c))) }
     }
 
-    fn skip_whitespace_and_comments(&mut self) {
+    fn skip(&mut self) {
         loop {
             if self.pos >= self.input.len() { break; }
-            let c = self.input.as_bytes()[self.pos] as char;
+            let rest = &self.input[self.pos..];
+            let c = match rest.chars().next() {
+                Some(ch) => ch,
+                None => break,
+            };
             if c == '\n' { self.line += 1; self.pos += 1; }
-            else if c.is_whitespace() { self.pos += 1; }
-            else if c == '/' && self.pos + 1 < self.input.len() {
-                let n = self.input.as_bytes()[self.pos + 1] as char;
-                if n == '/' {
-                    // line comment
+            else if c == '\r' { self.pos += 1; }
+            else if c == ' ' || c == '\t' { self.pos += 1; }
+            else if c == '/' && rest.len() >= 2 {
+                let next = rest.as_bytes()[1] as char;
+                if next == '/' {
                     self.pos += 2;
-                    while self.pos < self.input.len() && self.input.as_bytes()[self.pos] as char != '\n' {
-                        self.pos += 1;
-                    }
-                } else if n == '*' {
-                    // block comment
+                    while self.pos < self.input.len() && self.input.as_bytes()[self.pos] as char != '\n' { self.pos += 1; }
+                } else if next == '*' {
                     self.pos += 2;
                     while self.pos + 1 < self.input.len() {
                         if self.input.as_bytes()[self.pos] as char == '\n' { self.line += 1; }
-                        if self.input.as_bytes()[self.pos] as char == '*' && self.input.as_bytes()[self.pos + 1] as char == '/' {
-                            self.pos += 2;
-                            break;
-                        }
+                        if self.input.as_bytes()[self.pos] as char == '*' && self.input.as_bytes()[self.pos + 1] as char == '/' { self.pos += 2; break; }
                         self.pos += 1;
                     }
-                } else {
-                    break;
-                }
-            } else {
-                break;
-            }
+                } else { break; }
+            } else { break; }
         }
     }
 
-    fn error(&self, msg: &str) -> ParseError {
-        ParseError {
-            msg: msg.to_string(),
-            line: self.line,
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_empty_program() {
-        let mut p = Parser::new("");
-        let prog = p.parse().unwrap();
-        assert!(prog.boxes.is_empty());
-        assert!(prog.impls.is_empty());
-    }
-
-    #[test]
-    fn test_box_with_inst() {
-        let input = r#"
-box vga {
-  inst put_char(c: u8, x: u16, y: u16)
-  inst clear() -> !
-}
-"#;
-        let mut p = Parser::new(input);
-        let prog = p.parse().unwrap();
-        assert_eq!(prog.boxes.len(), 1);
-        assert_eq!(prog.boxes[0].name, "vga");
-        assert_eq!(prog.boxes[0].instructions.len(), 2);
-        assert_eq!(prog.boxes[0].instructions[0].name, "put_char");
-        assert_eq!(prog.boxes[0].instructions[0].params.len(), 3);
-    }
-
-    #[test]
-    fn test_simple_impl() {
-        let input = r#"
-impl vga::put_char(c: u8, x: u16, y: u16) {
-  let pos = x + y * 80;
-  asm!("mov byte [0xB8000], al");
-  retorna;
-}
-"#;
-        let mut p = Parser::new(input);
-        let prog = p.parse().unwrap();
-        assert_eq!(prog.impls.len(), 1);
-        assert_eq!(prog.impls[0].box_name, "vga");
-        assert_eq!(prog.impls[0].inst_name, "put_char");
-        assert_eq!(prog.impls[0].body.len(), 4);
+    fn err(&self, msg: &str) -> ParseError {
+        ParseError { msg: msg.to_string(), line: self.line }
     }
 }
