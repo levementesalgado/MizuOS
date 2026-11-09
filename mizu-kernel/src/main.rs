@@ -65,7 +65,7 @@ pub extern "C" fn kmain(_magic: u32, info: u32) -> ! {
 
     // Sonda ext4 (somente leitura) no disco primário, se houver.
     // Sem disco, continua só com initramfs — nada quebra.
-    let _ext4 = crate::fs_ext4::try_mount();
+    crate::fs_ext4::mount();
 
     arch::gdt::init(0x11B590);
     interrupts::init();

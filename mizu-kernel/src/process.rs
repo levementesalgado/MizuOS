@@ -1189,6 +1189,14 @@ pub fn sys_open(pathname: u32, flags: u32, _mode: u32) -> u32 {
             return fd;
         }
         let exists = crate::fs::file_exists(&name);
+        // Fallback read-only no ext4: se não está no initramfs, tenta o disco
+        // e materializa no ramfs para reuse do caminho normal de read/write.
+        if !exists && (flags & syscall::O_CREAT == 0) {
+            if let Some(data) = crate::fs_ext4::read_file_ext4(&name) {
+                crate::fs::file_write(&name, &data);
+            }
+        }
+        let exists = crate::fs::file_exists(&name);
         if exists || (flags & syscall::O_CREAT != 0) {
             let fd = match alloc_fd() { Some(fd) => fd, None => return -syscall::EMFILE as u32 };
             let opened_idx = opened_alloc(&name);
@@ -1224,7 +1232,7 @@ pub fn sys_fstatat(dirfd: u32, pathname: u32, statbuf: u32, flags: u32) -> i32 {
     unsafe {
         let name = raw_read_string(pathname);
         if name.is_empty() { return -syscall::ENOENT; }
-        if !crate::fs::file_exists(&name) { return -syscall::ENOENT; }
+        if !crate::fs::file_exists(&name) && !crate::fs_ext4::file_exists_ext4(&name) { return -syscall::ENOENT; }
         write_stat_stub(statbuf, 0o100777);
     }
     0

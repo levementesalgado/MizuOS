@@ -202,11 +202,6 @@ pub fn try_mount() -> Option<Mount> {
         m.block_size, m.blocks_count, m.inodes_count, m.inodes_per_group, m.inode_size, m.has_extents
     );
     m.list_root();
-    // Sonda: tenta ler hello.txt (criado pelo mkfs de teste); silêncio se ausente.
-    if let Some(data) = m.read_file("hello.txt") {
-        let txt = core::str::from_utf8(&data).unwrap_or("?");
-        serial_driver::sprintln!("  ext4: hello.txt = {}", txt);
-    }
     Some(m)
 }
 
@@ -215,4 +210,19 @@ pub fn try_mount() -> Option<Mount> {
 pub fn extent0_check(inode_block: &[u8]) -> bool {
     if inode_block.len() < 60 { return false; }
     rd_u16(inode_block, 0) == 0xF30A // eh_magic
+}
+
+// Mount global para VFS: process.rs consulta sem precisar do Mount no caller.
+static mut MOUNT: Option<Mount> = None;
+
+pub fn mount() {
+    unsafe { MOUNT = try_mount(); }
+}
+
+pub fn file_exists_ext4(name: &str) -> bool {
+    unsafe { MOUNT.as_ref().map(|m| m.find_in_root(name).is_some()).unwrap_or(false) }
+}
+
+pub fn read_file_ext4(name: &str) -> Option<Vec<u8>> {
+    unsafe { MOUNT.as_ref().and_then(|m| m.read_file(name)) }
 }
