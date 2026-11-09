@@ -60,6 +60,12 @@ pub extern "C" fn rust_handle_syscall(syscall_num: u32, saved_regs: &[u32; 12]) 
         syscall::SYS_WRITE => {
             process::sys_write(ebx, ecx, edx)
         }
+        syscall::SYS_READV => {
+            process::sys_readv(ebx, ecx, edx) as u32
+        }
+        syscall::SYS_WRITEV => {
+            process::sys_writev(ebx, ecx, edx) as u32
+        }
         syscall::SYS_OPEN => {
             process::sys_open(ebx, ecx, edx)
         }

@@ -66,11 +66,14 @@ pub extern "C" fn kmain(_magic: u32, info: u32) -> ! {
     crate::sys::pic_init();
     crate::sys::pit_init(100);
 
-    kprintln!("  pic/pit: OK");
+    kprintln!("  pic/pit: OK (masked, sti deferred)");
 
     keyboard::init();
-    crate::sys::sti();
-    kprintln!("  interrupts: enabled");
+    // NOTE: sti intentionally deferred until after paging + process setup.
+    // Enabling IRQ0 timer before TSS/paging/scheduler are ready causes a
+    // spurious PIT interrupt to fire into a half-initialized kernel stack
+    // (documented hang). Early boot uses serial + VGA, keyboard polling works
+    // without IRQ1 for the first prompts.
 
     use alloc::vec::Vec;
     let mut v = Vec::new();
@@ -122,6 +125,11 @@ pub extern "C" fn kmain(_magic: u32, info: u32) -> ! {
     }
 
     // Enter scheduler — picks first ready process and runs it (never returns)
+    // Enable hardware interrupts only now that GDT/IDT/PIC/PIT, paging,
+    // process table and TSS.esp0 are fully initialized.
+    kprintln!("  main: enabling interrupts (sti late)...");
+    crate::sys::sti();
+    kprintln!("  interrupts: enabled");
     kprintln!("  main: entering scheduler...");
     process::scheduler_enter()
 }

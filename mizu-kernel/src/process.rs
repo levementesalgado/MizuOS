@@ -1133,6 +1133,45 @@ pub fn sys_write(fd: u32, buf: u32, len: u32) -> u32 {
     }
 }
 
+// readv/writev sobre o mesmo caminho de sys_read/sys_write.
+// Port conceitual do TipOS (syscall_linux.zig): o __stdio_read do musl
+// usa readv sempre, sem ele todo fread falha. i386: 145=readv, 146=writev,
+// ebx=fd, ecx=iov[], edx=iovcnt; iov = {iov_base:u32, iov_len:u32}.
+pub fn sys_readv(fd: u32, iov: u32, iovcnt: u32) -> i32 {
+    let mut total: u32 = 0;
+    unsafe {
+        let p = iov as *const u32;
+        for i in 0..iovcnt {
+            let base = p.add((i as usize) * 2).read();
+            let len = p.add((i as usize) * 2 + 1).read();
+            if len == 0 { continue; }
+            let n = sys_read(fd, base, len);
+            // sys_read retorna -errno como u32 alto; tratar como erro
+            if (n as i32) < 0 { return n as i32; }
+            total = total.wrapping_add(n);
+            if n < len { break; }
+        }
+    }
+    total as i32
+}
+
+pub fn sys_writev(fd: u32, iov: u32, iovcnt: u32) -> i32 {
+    let mut total: u32 = 0;
+    unsafe {
+        let p = iov as *const u32;
+        for i in 0..iovcnt {
+            let base = p.add((i as usize) * 2).read();
+            let len = p.add((i as usize) * 2 + 1).read();
+            if len == 0 { continue; }
+            let n = sys_write(fd, base, len);
+            if (n as i32) < 0 { return n as i32; }
+            total = total.wrapping_add(n);
+            if n < len { break; }
+        }
+    }
+    total as i32
+}
+
 pub fn sys_open(pathname: u32, flags: u32, _mode: u32) -> u32 {
     unsafe {
         let name = raw_read_string(pathname);
