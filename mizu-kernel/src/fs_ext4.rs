@@ -101,23 +101,53 @@ impl Mount {
         let depth = rd_u16(i_block, 6);
         if depth != 0 { return out; }
         let entries = rd_u16(i_block, 2) as usize;
-        let mut file_off: u32 = 0;
+        let mut block_off: u32 = 0;
         for e in 0..entries {
             let base = 12 + e * 12;
             if base + 12 > 60 { break; }
             let ee_block = rd_u32(i_block, base);
             let ee_len = rd_u16(i_block, base + 4) as u32;
             let ee_start_lo = rd_u32(i_block, base + 8);
-            let _ = ee_start_lo;
-            if ee_block != file_off { break; } // só contíguo por enquanto
+            if ee_block != block_off { break; } // só contíguo por enquanto
             if let Some(data) = self.read_block(ee_start_lo) {
-                let take = core::cmp::min((ee_len * self.block_size) as usize, (size - file_off as u32) as usize);
+                let already = (block_off * self.block_size) as usize;
+                if already >= size as usize { break; }
+                let take = core::cmp::min((ee_len * self.block_size) as usize, (size as usize) - already);
                 out.extend_from_slice(&data[..take]);
             }
-            file_off += ee_len * self.block_size;
-            if file_off >= size { break; }
+            block_off = block_off.wrapping_add(ee_len);
         }
         out
+    }
+
+    fn dir_data(&self, ino: u32) -> Option<Vec<u8>> {
+        let (mode, size, i_block) = self.read_inode(ino)?;
+        if mode & 0xF000 != S_IFDIR { return None; }
+        Some(self.read_via_extents(&i_block, size))
+    }
+
+    pub fn find_in_root(&self, name: &str) -> Option<u32> {
+        let data = self.dir_data(2)?;
+        let mut off = 0usize;
+        while off + 8 <= data.len() {
+            let ino = rd_u32(&data, off);
+            let rec_len = rd_u16(&data, off + 4) as usize;
+            if rec_len < 8 || off + rec_len > data.len() { break; }
+            let nlen = data[off + 6] as usize;
+            if ino != 0 && nlen > 0 && off + 8 + nlen <= data.len() {
+                if &data[off + 8..off + 8 + nlen] == name.as_bytes() {
+                    return Some(ino);
+                }
+            }
+            off += rec_len;
+        }
+        None
+    }
+
+    pub fn read_file(&self, name: &str) -> Option<Vec<u8>> {
+        let ino = self.find_in_root(name)?;
+        let (_, size, i_block) = self.read_inode(ino)?;
+        Some(self.read_via_extents(&i_block, size))
     }
 
     pub fn list_root(&self) {
@@ -172,6 +202,11 @@ pub fn try_mount() -> Option<Mount> {
         m.block_size, m.blocks_count, m.inodes_count, m.inodes_per_group, m.inode_size, m.has_extents
     );
     m.list_root();
+    // Sonda: tenta ler hello.txt (criado pelo mkfs de teste); silêncio se ausente.
+    if let Some(data) = m.read_file("hello.txt") {
+        let txt = core::str::from_utf8(&data).unwrap_or("?");
+        serial_driver::sprintln!("  ext4: hello.txt = {}", txt);
+    }
     Some(m)
 }
 

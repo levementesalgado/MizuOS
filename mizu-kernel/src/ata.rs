@@ -21,14 +21,18 @@ fn inb(port: u16) -> u8 {
     val
 }
 
+fn delay400() {
+    for _ in 0..4 { let _ = inb(0x3F6); }
+}
+
 fn wait_bsy() {
-    for _ in 0..100000 {
+    for _ in 0..500000 {
         if inb(0x1F7) & 0x80 == 0 { return; }
     }
 }
 
 fn wait_drq() -> bool {
-    for _ in 0..100000 {
+    for _ in 0..500000 {
         let s = inb(0x1F7);
         if s & 0x80 == 0 {
             if s & 0x01 != 0 { return false; } // ERR
@@ -42,14 +46,15 @@ pub fn read_sectors(lba: u32, count: u8, buf: *mut u8) -> bool {
     wait_bsy();
     // Drive: master (0xE0), LBA mode, bits 24-27 do LBA
     outb(0x1F6, 0xE0 | ((lba >> 24) as u8 & 0x0F));
+    delay400();
     outb(0x1F2, count);
     outb(0x1F3, (lba & 0xFF) as u8);
     outb(0x1F4, ((lba >> 8) & 0xFF) as u8);
     outb(0x1F5, ((lba >> 16) & 0xFF) as u8);
     outb(0x1F7, 0x20); // READ SECTORS
-    if !wait_drq() { return false; }
     let mut p = buf;
-    for _ in 0..(count as usize) {
+    for i in 0..(count as usize) {
+        if !wait_drq() { return false; }
         for _i in 0..256 {
             let w = inw(0x1F0);
             unsafe {
@@ -59,8 +64,8 @@ pub fn read_sectors(lba: u32, count: u8, buf: *mut u8) -> bool {
                 p = p.add(1);
             }
         }
+        delay400();
+        if i + 1 < count as usize { wait_bsy(); }
     }
-    // Delay 400ns via alternate status
-    let _s = inb(0x3F6);
     true
 }
