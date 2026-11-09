@@ -18,6 +18,7 @@
 
 use crate::ata;
 use crate::serial_driver;
+use alloc::format;
 use alloc::vec::Vec;
 
 const SB_OFFSET_SECTORS: u32 = 2; // 1024 / 512
@@ -94,22 +95,39 @@ impl Mount {
         Some((mode, size_lo, i_block))
     }
 
-    // Lê dados via extents profundidade 0 (até 4 extents inline).
+    // Lê dados via extents (profundidade 0: inline; >0: árvore de blocos).
     fn read_via_extents(&self, i_block: &[u8; 60], size: u32) -> Vec<u8> {
-        let mut out = Vec::new();
-        if rd_u16(i_block, 0) != 0xF30A { return out; }
-        let depth = rd_u16(i_block, 6);
-        if depth != 0 { return out; }
+        if rd_u16(i_block, 0) != 0xF30A { return Vec::new(); }
+        let depth = rd_u16(i_block, 6) as usize;
         let entries = rd_u16(i_block, 2) as usize;
-        let mut block_off: u32 = 0;
+        if depth == 0 {
+            return self.read_leaf(i_block, size, 12);
+        }
+        // Profundidade >0: nós de índice apontando para blocos de extent.
+        let mut out = Vec::new();
         for e in 0..entries {
             let base = 12 + e * 12;
             if base + 12 > 60 { break; }
-            let ee_block = rd_u32(i_block, base);
-            let ee_len = rd_u16(i_block, base + 4) as u32;
-            let ee_start_lo = rd_u32(i_block, base + 8);
-            if ee_block != block_off { break; } // só contíguo por enquanto
-            if let Some(data) = self.read_block(ee_start_lo) {
+            let leaf_blk = rd_u32(i_block, base + 8);
+            out.extend_from_slice(&self.read_extent_tree(leaf_blk, depth - 1, size, 0));
+            if out.len() >= size as usize { out.truncate(size as usize); break; }
+        }
+        out
+    }
+
+    fn read_leaf(&self, node: &[u8], size: u32, header_size: usize) -> Vec<u8> {
+        let mut out = Vec::new();
+        if rd_u16(node, 0) != 0xF30A { return out; }
+        let entries = rd_u16(node, 2) as usize;
+        let mut block_off: u32 = 0;
+        for e in 0..entries {
+            let base = header_size + e * 12;
+            if base + 12 > node.len() { break; }
+            let ee_block = rd_u32(node, base);
+            let ee_len = rd_u16(node, base + 4) as u32;
+            let ee_start = rd_u32(node, base + 8);
+            if ee_block != block_off { break; }
+            if let Some(data) = self.read_block(ee_start) {
                 let already = (block_off * self.block_size) as usize;
                 if already >= size as usize { break; }
                 let take = core::cmp::min((ee_len * self.block_size) as usize, (size as usize) - already);
@@ -120,14 +138,32 @@ impl Mount {
         out
     }
 
+    fn read_extent_tree(&self, block: u32, depth: usize, size: u32, file_block_off: u32) -> Vec<u8> {
+        let Some(node) = self.read_block(block) else { return Vec::new() };
+        if node.len() < 12 || rd_u16(&node, 0) != 0xF30A { return Vec::new(); }
+        let entries = rd_u16(&node, 2) as usize;
+        if depth == 0 {
+            return self.read_leaf(&node, size, 12);
+        }
+        let mut out = Vec::new();
+        for e in 0..entries {
+            let base = 12 + e * 12;
+            if base + 12 > node.len() { break; }
+            let child = rd_u32(&node, base + 8);
+            out.extend_from_slice(&self.read_extent_tree(child, depth - 1, size, file_block_off));
+            if out.len() >= size as usize { out.truncate(size as usize); break; }
+        }
+        out
+    }
+
     fn dir_data(&self, ino: u32) -> Option<Vec<u8>> {
         let (mode, size, i_block) = self.read_inode(ino)?;
         if mode & 0xF000 != S_IFDIR { return None; }
         Some(self.read_via_extents(&i_block, size))
     }
 
-    pub fn find_in_root(&self, name: &str) -> Option<u32> {
-        let data = self.dir_data(2)?;
+    fn find_in_dir(&self, dir_ino: u32, name: &str) -> Option<u32> {
+        let data = self.dir_data(dir_ino)?;
         let mut off = 0usize;
         while off + 8 <= data.len() {
             let ino = rd_u32(&data, off);
@@ -144,8 +180,25 @@ impl Mount {
         None
     }
 
+    // Caminho absoluto "/a/b/c" ou relativo "a/b" a partir do root (ino 2).
+    pub fn lookup(&self, path: &str) -> Option<u32> {
+        let mut cur: u32 = 2;
+        for comp in path.split('/').filter(|s| !s.is_empty()) {
+            if comp == "." { continue; }
+            if comp == ".." { continue; } // sem pai real por enquanto (root é /)
+            cur = self.find_in_dir(cur, comp)?;
+        }
+        Some(cur)
+    }
+
+    pub fn find_in_root(&self, name: &str) -> Option<u32> {
+        self.find_in_dir(2, name)
+    }
+
     pub fn read_file(&self, name: &str) -> Option<Vec<u8>> {
-        let ino = self.find_in_root(name)?;
+        // Aceita "hello.txt" ou "/hello.txt" ou "/dir/hello.txt".
+        let path = if name.starts_with('/') { name } else { alloc::format!("/{}", name).leak() as &str };
+        let ino = self.lookup(path)?;
         let (_, size, i_block) = self.read_inode(ino)?;
         Some(self.read_via_extents(&i_block, size))
     }
