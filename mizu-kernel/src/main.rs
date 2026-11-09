@@ -21,6 +21,8 @@ mod pic;
 mod pit;
 mod memory;
 mod fs;
+mod ata;
+mod fs_ext4;
 mod personality;
 mod process;
 mod syscall;
@@ -60,6 +62,10 @@ pub extern "C" fn kmain(_magic: u32, info: u32) -> ! {
     let mem_upper = multiboot_mem_upper(info);
     memory::init(mem_upper);
     fs::init();
+
+    // Sonda ext4 (somente leitura) no disco primário, se houver.
+    // Sem disco, continua só com initramfs — nada quebra.
+    let _ext4 = crate::fs_ext4::try_mount();
 
     arch::gdt::init(0x11B590);
     interrupts::init();
