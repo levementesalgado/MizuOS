@@ -69,6 +69,18 @@ pub extern "C" fn rust_handle_syscall(syscall_num: u32, saved_regs: &[u32; 12]) 
         syscall::SYS_OPEN => {
             process::sys_open(ebx, ecx, edx)
         }
+        syscall::SYS_OPENAT => {
+            process::sys_openat(ebx, ecx, edx, esi)
+        }
+        syscall::SYS_FSTATAT => {
+            process::sys_fstatat(ebx, ecx, edx, esi) as u32
+        }
+        syscall::SYS_NEWFSTATAT => {
+            process::sys_fstatat(ebx, ecx, edx, esi) as u32
+        }
+        syscall::SYS_ARCH_PRCTL => {
+            process::sys_arch_prctl(ebx, ecx) as u32
+        }
         syscall::SYS_CLOSE => {
             process::sys_close(ebx)
         }

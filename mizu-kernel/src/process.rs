@@ -260,6 +260,7 @@ pub struct Process {
     mmap_base: u32,
     cwd: [u8; 256],
     cwd_len: u16,
+    fs_base: u32,
 }
 
 const EMPTY_SIGACTION: SignalAction = SignalAction {
@@ -291,6 +292,7 @@ static mut PPROCS: [Process; MAX_PROCS] = [Process {
     mmap_base: 0x40000000,
     cwd: [0; 256],
     cwd_len: 0,
+    fs_base: 0,
 }; MAX_PROCS];
 
 pub static mut CURRENT_PID: u32 = 0;
@@ -321,6 +323,7 @@ pub fn init(kpd: u32) {
                 mmap_base: 0x40000000,
                 cwd: [0; 256],
                 cwd_len: 0,
+                fs_base: 0,
             };
         }
         CURRENT_PID = 1;
@@ -1187,7 +1190,7 @@ pub fn sys_open(pathname: u32, flags: u32, _mode: u32) -> u32 {
         }
         let exists = crate::fs::file_exists(&name);
         if exists || (flags & syscall::O_CREAT != 0) {
-            let fd = match alloc_fd() { Some(f) => f, None => return -syscall::EMFILE as u32 };
+            let fd = match alloc_fd() { Some(fd) => fd, None => return -syscall::EMFILE as u32 };
             let opened_idx = opened_alloc(&name);
             FDTABLE[pid as usize][fd as usize] = FdEntry {
                 ftype: FdType::File, cloexec: false,
@@ -1200,6 +1203,69 @@ pub fn sys_open(pathname: u32, flags: u32, _mode: u32) -> u32 {
         }
     }
     -syscall::ENOENT as u32
+}
+
+// openat(295): dirfd + pathname + flags + mode.
+// Limitação atual: sem VFS não há fd de diretório real; dirfd é ignorado
+// (AT_FDCWD e qualquer dirfd resolvem o pathname como está, igual ao open).
+pub fn sys_openat(dirfd: u32, pathname: u32, flags: u32, mode: u32) -> u32 {
+    let _ = dirfd;
+    sys_open(pathname, flags, mode)
+}
+
+// fstatat(300)/newfstatat: dirfd + pathname + statbuf + flags.
+// AT_EMPTY_PATH: stat do próprio fd; AT_SYMLINK_NOFOLLOW: sem symlink (FS não tem symlink).
+pub fn sys_fstatat(dirfd: u32, pathname: u32, statbuf: u32, flags: u32) -> i32 {
+    const AT_EMPTY_PATH: u32 = 0x1000;
+    if flags & AT_EMPTY_PATH != 0 {
+        return sys_fstat_like(dirfd, statbuf);
+    }
+    let _ = dirfd;
+    unsafe {
+        let name = raw_read_string(pathname);
+        if name.is_empty() { return -syscall::ENOENT; }
+        if !crate::fs::file_exists(&name) { return -syscall::ENOENT; }
+        write_stat_stub(statbuf, 0o100777);
+    }
+    0
+}
+
+fn sys_fstat_like(fd: u32, statbuf: u32) -> i32 {
+    if fd <= 2 { write_stat_stub(statbuf, 0o20777); return 0; }
+    write_stat_stub(statbuf, 0o100777);
+    0
+}
+
+fn write_stat_stub(statbuf: u32, mode: u32) {
+    if statbuf == 0 { return; }
+    unsafe {
+        let p = statbuf as *mut u8;
+        for i in 0..syscall::STAT_STRUCT_SIZE { p.add(i).write(0); }
+        *(statbuf as *mut u32).add(4) = mode;
+    }
+}
+
+// arch_prctl(224): TLS por processo (FS.base).
+// Armazena em Process::fs_base; troca de FS no iretd é passo seguinte (PIT preempção).
+pub fn sys_arch_prctl(code: u32, addr: u32) -> i32 {
+    unsafe {
+        let p = CURRENT_PID as usize;
+        match code {
+            syscall::ARCH_SET_FS => { PPROCS[p].fs_base = addr; 0 }
+            syscall::ARCH_GET_FS => {
+                if addr == 0 { return -syscall::EFAULT; }
+                *(addr as *mut u32) = PPROCS[p].fs_base;
+                0
+            }
+            syscall::ARCH_SET_GS => 0,
+            syscall::ARCH_GET_GS => {
+                if addr == 0 { return -syscall::EFAULT; }
+                *(addr as *mut u32) = 0;
+                0
+            }
+            _ => -syscall::EINVAL,
+        }
+    }
 }
 
 pub fn sys_close(fd: u32) -> u32 {

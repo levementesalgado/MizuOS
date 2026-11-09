@@ -105,6 +105,20 @@ pub const SYS_PRLIMIT64: u32 = 319;
 pub const SYS_GETRLIMIT: u32 = 191;
 pub const SYS_SETRLIMIT: u32 = 190;
 pub const SYS_UNAME_OLD: u32 = 122;
+pub const SYS_ARCH_PRCTL: u32 = 224;
+pub const SYS_OPENAT: u32 = 295;
+pub const SYS_FACCESSAT: u32 = 292;
+pub const SYS_FSTATAT: u32 = 300;
+pub const SYS_NEWFSTATAT: u32 = 300;
+
+// arch_prctl codes (Linux)
+pub const ARCH_SET_FS: u32 = 0x1002;
+pub const ARCH_GET_FS: u32 = 0x1003;
+pub const ARCH_SET_GS: u32 = 0x1001;
+pub const ARCH_GET_GS: u32 = 0x1004;
+
+// AT_FDCWD as u32 (i.e. -100)
+pub const AT_FDCWD: u32 = 0xFFFFFF9C;
 
 // errno values (Linux <asm-generic/errno.h>)
 pub const ENOENT: i32 = 2;
