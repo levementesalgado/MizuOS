@@ -41,8 +41,13 @@ fn main() {
 
     // Copy init.elf to a known location
     let target_name = target_spec.file_stem().unwrap().to_str().unwrap();
-    let profile = std::env::var("PROFILE").unwrap_or_else(|_| "debug".to_string());
-    let init_elf_src = init_out.join(format!("{}/{}/mizu-init", target_name, profile));
+    // Subprocess builds debug (no --release passed); try both profiles.
+    let init_elf_src = init_out.join(format!("{}/debug/mizu-init", target_name));
+    let init_elf_src = if init_elf_src.exists() {
+        init_elf_src
+    } else {
+        init_out.join(format!("{}/release/mizu-init", target_name))
+    };
     let init_elf_dst = out_dir.join("init.elf");
     std::fs::copy(&init_elf_src, &init_elf_dst).expect("failed to copy init.elf");
 
