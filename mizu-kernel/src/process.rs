@@ -1437,6 +1437,30 @@ pub fn sys_mprotect(_addr: u32, _len: u32, _prot: u32) -> i32 {
 
 // ─── Fork: create child with duplicated context ─────────
 
+pub fn on_timer_interrupt(saved_esp: u32) -> u32 {
+    unsafe {
+        let cur = CURRENT_PID as usize;
+        if cur >= MAX_PROCS || PPROCS[cur].state as u8 == State::Free as u8 { return 0; }
+        // Só preemptiva processo Running; shell do kernel (PID1 Running) também entra,
+        // mas sem processo Ready extra vira no-op.
+        PPROCS[cur].saved_esp = saved_esp;
+        let start = cur;
+        let mut next = (start + 1) % MAX_PROCS;
+        while next != start {
+            let st = PPROCS[next].state as u8;
+            if st == State::Ready as u8 {
+                break;
+            }
+            next = (next + 1) % MAX_PROCS;
+        }
+        if next == start { return 0; }
+        CURRENT_PID = next as u32;
+        PPROCS[next].state = State::Running;
+        TSS.esp0 = PPROCS[next].kstack_base + KSTACK_SIZE;
+        return PPROCS[next].saved_esp;
+    }
+}
+
 pub fn sys_fork() -> i32 {
     unsafe {
         let new_pid = match alloc_pid() {

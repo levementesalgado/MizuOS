@@ -71,7 +71,8 @@ idt_set_entry:
     ret
 
 /* ─── Interrupt stubs ────────────────────────── */
-/* Normal ISR: push ISR number, call Rust handler */
+/* Normal ISR: push ISR number, call Rust handler.
+   O handler retorna new_ESP (0 = sem troca) para preempção via PIT. */
 isr_common:
     pusha
     push ds
@@ -91,13 +92,21 @@ isr_common:
     mov ebx, [esp + 52]    /* error code */
     mov ecx, [esp + 56]    /* EIP */
     mov edx, [esp + 60]    /* CS */
+    lea esi, [esp]         /* saved_esp (gs) */
+    push esi               /* 5th arg: saved_esp */
     push edx               /* 4th arg: CS */
     push ecx               /* 3rd arg: EIP */
     push ebx               /* 2nd arg: error code */
     push eax               /* 1st arg: ISR number */
     call interrupt_handler
-    add esp, 16
+    add esp, 20
 
+    /* eax = new_esp (0 = sem troca, como no syscall_handler) */
+    test eax, eax
+    jz .isr_restore
+    mov esp, eax
+
+.isr_restore:
     pop gs
     pop fs
     pop es

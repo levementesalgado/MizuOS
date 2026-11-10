@@ -373,8 +373,8 @@ fn sys_fstat(fd: u32, statbuf: u32) -> u32 {
 // ─── Interrupt handler ──────────────────────────────────
 
 #[no_mangle]
-pub extern "C" fn interrupt_handler(isr: u32, err: u32, eip: u32, cs: u32) {
-    match isr {
+pub extern "C" fn interrupt_handler(isr: u32, err: u32, eip: u32, cs: u32, saved_esp: u32) -> u32 {
+    let ret: u32 = match isr {
         0 => kpanic!("division by zero"),
         6 => kpanic!("invalid opcode"),
         8 => kpanic!("double fault (err={:#x})", err),
@@ -387,16 +387,26 @@ pub extern "C" fn interrupt_handler(isr: u32, err: u32, eip: u32, cs: u32) {
             unsafe { core::arch::asm!("mov {}, cr2", out(reg) cr2); }
             kpanic!("page fault (err={:#x}, cr2={:#x})", err, cr2)
         }
-        32 => pit::tick(),
-        33 => keyboard::irq_handler(),
+        32 => {
+            pit::tick();
+            // Preempção: troca round-robin se houver processo Ready.
+            if saved_esp != 0 {
+                crate::process::on_timer_interrupt(saved_esp)
+            } else {
+                0
+            }
+        }
+        33 => { keyboard::irq_handler(); 0 }
         _ => {
             serial_driver::sprintln!("  unhandled ISR {}", isr);
+            0
         }
-    }
+    };
 
     if isr >= 32 && isr <= 47 {
         pic_eoi(isr);
     }
+    ret
 }
 
 fn pic_eoi(irq: u32) {
