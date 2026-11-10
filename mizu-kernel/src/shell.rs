@@ -371,14 +371,14 @@ fn longest_common_prefix(strings: &[&str]) -> String {
 }
 
 fn prompt() {
-    vga_driver::write_str("\x1b[38;5;80m~ \x1b[0m ");
-    serial_driver::write_str("~ ");
+    vga_driver::write_str("\x1b[38;5;80m~ \x1b[38;5;213m☯\x1b[0m ");
+    serial_driver::write_str("~ ☯ ");
 }
 
 pub fn shell_loop() -> ! {
-    vga_driver::write_str("\x1b[38;5;80m Mizu Kernel v0.1.0\x1b[0m\n");
+    vga_driver::write_str("\x1b[38;5;80m☯ Mizu Kernel v0.1.0\x1b[0m\n");
     vga_driver::write_str("\x1b[2mcomandos: help | atalhos: Ctrl+C/D/L/U\x1b[0m\n\n");
-    serial_driver::write_str("Mizu Kernel v0.1.0\n");
+    serial_driver::write_str("☯ Mizu Kernel v0.1.0\n");
     serial_driver::write_str("comandos: help | atalhos: Ctrl+C/D/L/U\n\n");
 
     let mut ed = LineEditor::new();

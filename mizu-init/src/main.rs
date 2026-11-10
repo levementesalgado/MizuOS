@@ -239,7 +239,7 @@ pub extern "C" fn _start() -> ! {
     let mut buf = [0u8; 256];
 
     loop {
-        print("mizu> ");
+        print("~ ☯ ");
         let line = match read_line(&mut buf) {
             Some(l) => l,
             None => continue,
