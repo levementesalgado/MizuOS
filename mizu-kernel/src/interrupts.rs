@@ -258,6 +258,9 @@ pub extern "C" fn rust_handle_syscall(syscall_num: u32, saved_regs: &[u32; 12]) 
         syscall::SYS_UNLINK => {
             process::sys_unlink(ebx) as u32
         }
+        syscall::SYS_LINK => {
+            process::sys_link(ebx, ecx) as u32
+        }
         syscall::SYS_MKDIR => {
             process::sys_mkdir(ebx, ecx) as u32
         }
@@ -266,6 +269,18 @@ pub extern "C" fn rust_handle_syscall(syscall_num: u32, saved_regs: &[u32; 12]) 
         }
         syscall::SYS_RENAME => {
             process::sys_rename(ebx, ecx) as u32
+        }
+        syscall::SYS_CLONE => {
+            process::sys_clone(ebx, ecx, edx, esi, edi) as u32
+        }
+        syscall::SYS_SET_TID_ADDRESS => {
+            process::sys_set_tid_address(ebx) as u32
+        }
+        syscall::SYS_STATX => {
+            process::sys_statx(ebx, ecx, edx, esi) as u32
+        }
+        syscall::SYS_FACCESSAT => {
+            process::sys_faccessat(ebx, ecx, edx, esi) as u32
         }
         syscall::SYS_CHMOD => {
             process::sys_chmod(ebx, ecx) as u32

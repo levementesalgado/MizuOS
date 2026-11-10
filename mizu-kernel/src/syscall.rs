@@ -107,9 +107,16 @@ pub const SYS_SETRLIMIT: u32 = 190;
 pub const SYS_UNAME_OLD: u32 = 122;
 pub const SYS_ARCH_PRCTL: u32 = 224;
 pub const SYS_OPENAT: u32 = 295;
-pub const SYS_FACCESSAT: u32 = 292;
+pub const SYS_MKDIRAT: u32 = 296;
 pub const SYS_FSTATAT: u32 = 300;
 pub const SYS_NEWFSTATAT: u32 = 300;
+pub const SYS_FACCESSAT: u32 = 307;
+pub const SYS_CLONE: u32 = 120;
+pub const SYS_SET_TID_ADDRESS: u32 = 258;
+pub const SYS_STATX: u32 = 383;
+pub const SYS_UNLINKAT: u32 = 301;
+pub const SYS_RENAMEAT: u32 = 302;
+pub const SYS_LINKAT: u32 = 303;
 
 // arch_prctl codes (Linux)
 pub const ARCH_SET_FS: u32 = 0x1002;

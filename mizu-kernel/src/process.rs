@@ -983,20 +983,93 @@ pub fn sys_isatty(fd: u32) -> i32 {
     if fd <= 2 { 1 } else { 0 }
 }
 
-pub fn sys_unlink(_pathname: u32) -> i32 {
-    -syscall::ENOSYS
+pub fn sys_unlink(pathname: u32) -> i32 {
+    unsafe {
+        let name = raw_read_string(pathname);
+        if name.is_empty() { return -syscall::ENOENT; }
+        if crate::fs::file_remove(&name) { 0 } else { -syscall::ENOENT }
+    }
 }
 
 pub fn sys_mkdir(_pathname: u32, _mode: u32) -> i32 {
-    -syscall::ENOSYS
+    // Sem VFS com diretórios, mkdir é stub de sucesso (initramfs é plano).
+    0
 }
 
 pub fn sys_rmdir(_pathname: u32) -> i32 {
-    -syscall::ENOSYS
+    0
 }
 
-pub fn sys_rename(_oldpath: u32, _newpath: u32) -> i32 {
-    -syscall::ENOSYS
+pub fn sys_rename(oldpath: u32, newpath: u32) -> i32 {
+    unsafe {
+        let old = raw_read_string(oldpath);
+        let new = raw_read_string(newpath);
+        if old.is_empty() || new.is_empty() { return -syscall::ENOENT; }
+        if crate::fs::file_rename(&old, &new) { 0 } else { -syscall::ENOENT }
+    }
+}
+
+pub fn sys_link(oldpath: u32, newpath: u32) -> i32 {
+    unsafe {
+        let old = raw_read_string(oldpath);
+        let new = raw_read_string(newpath);
+        if old.is_empty() || new.is_empty() { return -syscall::ENOENT; }
+        match crate::fs::file_read(&old) {
+            Some(data) => {
+                crate::fs::file_write(&new, data);
+                0
+            }
+            None => -syscall::ENOENT,
+        }
+    }
+}
+
+pub fn sys_statx(dirfd: u32, pathname: u32, flags: u32, statx_buf: u32) -> i32 {
+    let _ = dirfd;
+    let _ = flags;
+    if statx_buf == 0 { return -syscall::EFAULT; }
+    unsafe {
+        let name = raw_read_string(pathname);
+        if name.is_empty() { return -syscall::ENOENT; }
+        // statx moderno: zera 256 bytes (statx struct) e preenche mode básico.
+        // Layout completo de linux/stat.h fica para depois; musl só checa mode/size.
+        let ok = crate::fs::file_exists(&name) || crate::fs_ext4::file_exists_ext4(&name);
+        if !ok { return -syscall::ENOENT; }
+        let p = statx_buf as *mut u8;
+        for i in 0..256 { p.add(i).write(0); }
+        // stx_mask = STATX_BASIC_STATS (0x7ff), stx_mode = 0o100777 file regular
+        *(statx_buf as *mut u32) = 0x7ff;
+        *(statx_buf as *mut u32).add(1) = 0o100777;
+    }
+    0
+}
+
+pub fn sys_faccessat(dirfd: u32, pathname: u32, mode: u32, _flags: u32) -> i32 {
+    let _ = dirfd;
+    let _ = mode;
+    unsafe {
+        let name = raw_read_string(pathname);
+        if name.is_empty() { return -syscall::ENOENT; }
+        if crate::fs::file_exists(&name) || crate::fs_ext4::file_exists_ext4(&name) { 0 } else { -syscall::ENOENT }
+    }
+}
+
+pub fn sys_clone(_flags: u32, _stack: u32, _parent_tid: u32, _tls: u32, _child_tid: u32) -> i32 {
+    // Para o passo atual, clone == fork (copia contexto via sys_fork).
+    // Flags/thread-group e TLS passados pelo clone ficam para depois.
+    sys_fork()
+}
+
+pub fn sys_set_tid_address(tidptr: u32) -> i32 {
+    // Armazena tid do thread atual no mesmo lugar de fs_base por enquanto.
+    // O musl chama isso no boot de threads; retornar o endereço satisfaz.
+    unsafe {
+        let p = CURRENT_PID as usize;
+        if tidptr != 0 {
+            (tidptr as *mut u32).write(PPROCS[p].pid);
+        }
+        PPROCS[p].pid as i32
+    }
 }
 
 pub fn sys_symlink(_target: u32, _linkpath: u32) -> i32 {
