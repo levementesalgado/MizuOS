@@ -124,7 +124,11 @@ fn cmd_ls(args: &[&str]) {
             } else {
                 "\x1b[0m"
             };
-            println!("{} {}{}\x1b[0m", kind, color, name);
+            // Tamanho legível estilo Nushell (B/KB/MB).
+            let size_str = fs::metadata(expand_path(name).as_str())
+                .map(|m| human_size(m.len()))
+                .unwrap_or_else(|_| "-".into());
+            println!("{} {} {}{}\x1b[0m", kind, size_str, color, name);
         }
     } else {
         let parts: Vec<String> = items
@@ -350,6 +354,14 @@ fn cmd_hostname(args: &[&str]) {
 }
 
 // ── Helpers ──────────────────────────────────────────────────────
+
+fn human_size(n: u64) -> String {
+    const UNITS: &[&str] = &["B", "KB", "MB", "GB"];
+    let mut v = n as f64;
+    let mut i = 0;
+    while v >= 1024.0 && i < UNITS.len() - 1 { v /= 1024.0; i += 1; }
+    if i == 0 { format!("{:>6} {}", n, UNITS[i]) } else { format!("{:>6.1} {}", v, UNITS[i]) }
+}
 
 fn visible_len(s: &str) -> usize {
     // Remove ANSI codes

@@ -29,6 +29,41 @@ fn render_prompt() -> String {
 }
 
 /// ── Helper ──────────────────────────────────────────────────────
+const COMMANDS: &[&str] = &[
+    "help", "ls", "cat", "echo", "cd", "pwd", "mkdir", "rmdir", "rm", "touch",
+    "cp", "mv", "clear", "whoami", "date", "uname", "mount", "umount", "hostname", "exit",
+];
+
+// Abreviações estilo Fish (expansão no primeiro token).
+const ABBREVS: &[(&str, &str)] = &[
+    ("ll", "ls -la"),
+    ("la", "ls -a"),
+    ("g", "git"),
+    ("h", "help"),
+    ("e", "echo"),
+    ("c", "cat"),
+];
+
+fn expand_abbrev(line: &str) -> String {
+    let t = line.trim_start();
+    if t.is_empty() { return line.to_string(); }
+    let first = t.split_whitespace().next().unwrap_or("");
+    // Só expande se a linha toda é a abreviação ou ela + espaço + resto.
+    for (short, long) in ABBREVS {
+        if first == *short {
+            let rest = t[first.len()..].trim_start();
+            if rest.is_empty() {
+                let indent = line.len() - t.len();
+                return format!("{}{}", " ".repeat(indent), long);
+            } else {
+                let indent = line.len() - t.len();
+                return format!("{}{} {}", " ".repeat(indent), long, rest);
+            }
+        }
+    }
+    line.to_string()
+}
+
 struct MizuHelper;
 
 impl Helper for MizuHelper {}
@@ -43,6 +78,22 @@ impl Completer for MizuHelper {
         _ctx: &Context<'_>,
     ) -> rustyline::Result<(usize, Vec<Pair>)> {
         let line_before = &line[..pos];
+        let first_token = line_before.split_whitespace().next().unwrap_or("");
+        // Completando a primeira palavra? Oferece comandos + abreviações.
+        if line_before.trim_end().len() == first_token.len() {
+            let mut cmds: Vec<Pair> = COMMANDS.iter()
+                .filter(|c| c.starts_with(first_token))
+                .map(|c| Pair { display: c.to_string(), replacement: c.to_string() })
+                .collect();
+            for (short, long) in ABBREVS {
+                if short.starts_with(first_token) {
+                    cmds.push(Pair { display: format!("{} → {}", short, long), replacement: short.to_string() });
+                }
+            }
+            if !cmds.is_empty() {
+                return Ok((0, cmds));
+            }
+        }
         let token = line_before.split_whitespace().last().unwrap_or("");
         let prefix = expand_path_env(token);
 
@@ -81,14 +132,35 @@ impl Completer for MizuHelper {
 
 impl Hinter for MizuHelper {
     type Hint = MizuHint;
-    fn hint(&self, _line: &str, _pos: usize, _ctx: &Context<'_>) -> Option<MizuHint> { None }
+    fn hint(&self, line: &str, pos: usize, _ctx: &Context<'_>) -> Option<MizuHint> {
+        // Sugestão estilo Fish: só no primeiro token, completa comando conhecido.
+        if pos == 0 { return None; }
+        let before = &line[..pos.min(line.len())];
+        if before.contains(char::is_whitespace) { return None; }
+        let cur = before.trim();
+        if cur.is_empty() || cur.len() < 2 { return None; }
+        for c in COMMANDS {
+            if c.starts_with(cur) && *c != cur {
+                return Some(MizuHint { suffix: c[cur.len()..].to_string() });
+            }
+        }
+        for (short, long) in ABBREVS {
+            if long.starts_with(cur) && cur.len() >= 2 {
+                let _ = short;
+                return Some(MizuHint { suffix: long[cur.len()..].to_string() });
+            }
+        }
+        None
+    }
 }
 
 #[derive(Debug, Clone)]
-struct MizuHint;
+struct MizuHint {
+    suffix: String,
+}
 impl Hint for MizuHint {
-    fn completion(&self) -> Option<&str> { None }
-    fn display(&self) -> &str { "" }
+    fn completion(&self) -> Option<&str> { Some(&self.suffix) }
+    fn display(&self) -> &str { &self.suffix }
 }
 
 impl Highlighter for MizuHelper {
@@ -99,9 +171,61 @@ impl Highlighter for MizuHelper {
         std::borrow::Cow::Owned(format!("\x1b[2m{}\x1b[0m", hint))
     }
     fn highlight<'l>(&self, line: &'l str, _cursor: usize) -> std::borrow::Cow<'l, str> {
-        std::borrow::Cow::Borrowed(line)
+        // Highlight simples: comando (azul), string (rosa), operador (negrito).
+        let mut out = String::new();
+        let mut first = true;
+        for tok in split_args_keep(line) {
+            if tok.is_empty() {
+                continue;
+            }
+            let delim = &tok.trim();
+            if delim.is_empty() {
+                out.push_str(&tok);
+                continue;
+            }
+            let word: String = tok.chars().take_while(|c| !c.is_whitespace()).collect();
+            let rest: String = tok.chars().skip_while(|c| !c.is_whitespace()).collect();
+            if ["|", ">", ">>", "<"].contains(&word.as_str()) {
+                out.push_str(&format!("\x1b[1m{}\x1b[0m{}", word, rest));
+                first = false;
+                continue;
+            }
+            if (word.starts_with('"') && word.ends_with('"')) || (word.starts_with('\'') && word.ends_with('\'')) {
+                out.push_str(&format!("\x1b[38;5;213m{}\x1b[0m{}", word, rest));
+            } else if first {
+                let known = COMMANDS.contains(&word.as_str()) || std::fs::metadata(&word).is_ok();
+                let color = if known { "38;5;80" } else { "31" };
+                out.push_str(&format!("\x1b[{}m{}\x1b[0m{}", color, word, rest));
+                first = false;
+                continue;
+            } else if word.starts_with('-') {
+                out.push_str(&format!("\x1b[2m{}\x1b[0m{}", word, rest));
+            } else {
+                out.push_str(&format!("{}{}", word, rest));
+            }
+            if !["|", ">", ">>", "<"].contains(&word.as_str()) {
+                first = false;
+            }
+        }
+        std::borrow::Cow::Owned(out)
     }
     fn highlight_char(&self, _line: &str, _pos: usize, _forced: bool) -> bool { false }
+}
+
+fn split_args_keep(line: &str) -> Vec<String> {
+    // Mantém espaços como tokens próprios para highlight não comer a linha.
+    let mut v = Vec::new();
+    let mut cur = String::new();
+    for ch in line.chars() {
+        if ch.is_whitespace() {
+            if !cur.is_empty() { v.push(std::mem::take(&mut cur)); }
+            if cur.is_empty() { v.push(ch.to_string()); }
+        } else {
+            cur.push(ch);
+        }
+    }
+    if !cur.is_empty() { v.push(cur); }
+    v
 }
 
 impl Validator for MizuHelper {
@@ -212,7 +336,8 @@ fn prepare_external(cmd: &SimpleCommand, builtins: &Builtins) -> Command {
 }
 
 fn run_line(line: &str, builtins: &Builtins) {
-    let tokens = match tokenize(line) {
+    let expanded = expand_abbrev(line);
+    let tokens = match tokenize(&expanded) {
         Ok(t) => t,
         Err(ParseError::UnterminatedQuote) => { eprintln!("mizu-sh: aspas não fechadas"); return; }
         Err(ParseError::Empty) => return,
